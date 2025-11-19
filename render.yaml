@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: olx-scraper
+    env: docker
+    plan: free
+    region: frankfurt
+    
+    # Source repository (update with your GitHub URL)
+    repo: https://github.com/gnez360/olx-scrapper.git
+    branch: main
+    
+    # Docker image configuration
+    dockerfile: ./Dockerfile
+    dockerContext: ./
+    
+    # Build and start commands
+    buildCommand: npm install
+    startCommand: npm start
+    
+    # Server port
+    port: 3000
+    
+    # Environment variables
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "false"
+    
+    # Health check endpoint
+    healthCheckPath: /health
+    healthCheckInterval: 30
+    healthCheckTimeout: 10
+    healthCheckStartupDelay: 30
+    
+    # Auto-deploy from Git commits
+    autoDeploy: true
+    
+    # Number of instances
+    numInstances: 1
+    
+    # Build and startup timeouts (seconds)
+    buildTimeout: 900
+    startupTimeout: 600
+    
+    # Logging level
+    logLevel: info
