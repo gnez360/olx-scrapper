@@ -44,141 +44,85 @@ async function extractListingsFromPage(page) {
     const results = [];
     const seen = new Set();
 
-    console.log('🎯 Procurando anúncios...');
+    console.log('🎯 Procurando anúncios com classe olx-adcard...');
 
-    // ESTRATÉGIA 1: Buscar por estrutura específica do OLX
-    const listingCards = document.querySelectorAll('[data-lurker_list_id], [data-lurker_dimension_listing_id], .sc-12rk7z2-0, .sc-1fcmfeb-0, .sc-1fcmfeb-1');
+    // ESTRATÉGIA 1: Buscar por .olx-adcard (estrutura atual do OLX)
+    const listingCards = document.querySelectorAll('.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]');
     
     console.log(`📦 Encontrados ${listingCards.length} cards potenciais`);
 
     listingCards.forEach((card, index) => {
       try {
-        // Encontrar link do anúncio
+        // Encontrar link do anúncio (o título tem o link)
         let link = null;
-        const linkSelectors = [
-          'a[href*="/item/"]',
-          'a[href*="/d/"]', 
-          'a[href*="/anuncio/"]',
-          'a'
-        ];
-
-        for (const selector of linkSelectors) {
-          const linkEl = card.querySelector(selector);
-          if (linkEl && linkEl.href && (linkEl.href.includes('/item/') || linkEl.href.includes('/d/'))) {
-            link = linkEl.href;
-            break;
+        let title = null;
+        
+        // Procurar por <a> dentro do card com href contendo a URL do anúncio
+        const linkEl = card.querySelector('.olx-adcard__title, h2') || card.querySelector('a[href*="olx.com.br"]');
+        
+        if (linkEl) {
+          const anchor = linkEl.closest('a') || linkEl.parentElement.querySelector('a');
+          if (anchor && anchor.href) {
+            link = anchor.href;
+            title = linkEl.textContent?.trim();
           }
         }
 
-        if (!link || seen.has(link)) return;
+        // Se não encontrou, tentar outro método
+        if (!link) {
+          const allAnchors = card.querySelectorAll('a[href*="olx.com.br"]');
+          for (let a of allAnchors) {
+            if (a.href && a.textContent?.trim().length > 5) {
+              link = a.href;
+              title = a.textContent?.trim();
+              break;
+            }
+          }
+        }
+
+        if (!link || !title || seen.has(link)) return;
         seen.add(link);
 
-        console.log(`📝 Processando card ${index + 1}: ${link}`);
+        console.log(`📝 Processando card ${index + 1}: ${title.substring(0, 40)}`);
 
-        // Extrair título
-        let title = null;
-        const titleSelectors = [
-          'h2',
-          '.sc-1fcmfeb-2',
-          '.sc-gGBfsJ',
-          '.sc-1mb7w0y',
-          '[class*="title"]',
-          '[class*="Title"]'
-        ];
-
-        for (const selector of titleSelectors) {
-          const titleEl = card.querySelector(selector);
-          if (titleEl) {
-            title = titleEl.textContent?.trim();
-            if (title && title.length > 5 && title.length < 200) {
-              console.log(`✅ Título encontrado: ${title.substring(0, 50)}...`);
-              break;
-            }
-          }
-        }
-
-        // Extrair preço
+        // Extrair preço - procurar por h3 com classe price
         let price = null;
-        const priceSelectors = [
-          '.sc-ifAKCX',
-          '.sc-1kn4z61',
-          '.sc-1fcmfeb-3',
-          '[class*="price"]',
-          '[class*="Price"]',
-          'span[class*="price"]'
-        ];
-
-        for (const selector of priceSelectors) {
-          const priceEl = card.querySelector(selector);
-          if (priceEl) {
-            const priceText = priceEl.textContent?.trim();
-            if (priceText && (priceText.includes('R$') || /\d{1,3}(?:\.\d{3})*,\d{2}/.test(priceText))) {
-              price = priceText;
-              console.log(`💰 Preço encontrado: ${price}`);
-              break;
-            }
-          }
+        const priceEl = card.querySelector('.olx-adcard__price');
+        if (priceEl) {
+          price = priceEl.textContent?.trim();
+          console.log(`💰 Preço encontrado: ${price}`);
         }
 
-        // Extrair localização
+        // Extrair localização - procurar por .olx-adcard__location
         let location = null;
-        const locationSelectors = [
-          '.sc-1c3ysll',
-          '.sc-7l84qu',
-          '.sc-1fcmfeb-4',
-          '[class*="location"]',
-          '[class*="Location"]'
-        ];
-
-        for (const selector of locationSelectors) {
-          const locationEl = card.querySelector(selector);
-          if (locationEl) {
-            location = locationEl.textContent?.trim();
-            if (location) {
-              console.log(`📍 Localização: ${location}`);
-              break;
-            }
+        const locationEl = card.querySelector('.olx-adcard__location');
+        if (locationEl) {
+          location = locationEl.textContent?.trim();
+          if (location) {
+            console.log(`📍 Localização: ${location}`);
           }
         }
 
-        // Extrair data
+        // Extrair data - procurar por .olx-adcard__date ou elementos com data
         let dateText = null;
-        const dateSelectors = [
-          '.sc-1a4db0v',
-          '.sc-1fcmfeb-5',
-          '[class*="date"]',
-          '[class*="Date"]',
-          'time'
-        ];
-
-        for (const selector of dateSelectors) {
-          const dateEl = card.querySelector(selector);
-          if (dateEl) {
-            dateText = dateEl.textContent?.trim() || dateEl.getAttribute('datetime');
-            if (dateText) {
-              console.log(`📅 Data: ${dateText}`);
-              break;
-            }
+        const dateEl = card.querySelector('[class*="date"], time');
+        console.log(dateEl);
+        if (dateEl) {
+          dateText = dateText = dateEl.textContent?.replace(/\s+/g, ' ').replace(/\n+/g, ' ').trim() || dateEl.getAttribute('datetime');
+          if (dateText) {
+            console.log(`📅 Data: ${dateText}`);
           }
         }
 
-        // Extrair imagem
+        // Extrair imagem - procurar por img dentro do card
         let image = null;
-        const imgSelectors = [
-          'img[src]',
-          'img[data-src]',
-          '.sc-1fcmfeb-0 img',
-          '.sc-12rk7z2-1 img'
-        ];
-
-        for (const selector of imgSelectors) {
-          const imgEl = card.querySelector(selector);
-          if (imgEl) {
-            image = imgEl.src || imgEl.getAttribute('data-src') || imgEl.getAttribute('srcset')?.split(' ')[0];
-            if (image) {
-              console.log(`🖼️ Imagem: ${image.substring(0, 50)}...`);
-              break;
-            }
+        const imgEl = card.querySelector('img[src]');
+        if (imgEl) {
+          image = imgEl.src;
+          if (image && !image.includes('data:image')) {
+            console.log(`🖼️ Imagem encontrada`);
+          } else {
+            image = null;
           }
         }
 
@@ -204,43 +148,43 @@ async function extractListingsFromPage(page) {
       }
     });
 
-    // ESTRATÉGIA 2: Fallback - buscar por qualquer elemento que pareça um anúncio
+    // ESTRATÉGIA 2: Fallback - buscar por padrão genérico se nada encontrou
     if (results.length === 0) {
-      console.log('🔄 Tentando estratégia fallback...');
+      console.log('🔄 Tentando estratégia fallback com padrão genérico...');
       
-      const allLinks = Array.from(document.querySelectorAll('a[href*="/item/"], a[href*="/d/"]'));
+      const allLinks = Array.from(document.querySelectorAll('a[href*="mg.olx.com.br"], a[href*="olx.com.br"]'));
       allLinks.forEach(linkEl => {
         try {
           const link = linkEl.href;
-          if (seen.has(link)) return;
+          if (seen.has(link) || !link.includes('/celulares/')) return;
           
-          // Encontrar elementos de texto próximos
-          const parent = linkEl.closest('div, article, li') || linkEl.parentElement;
-          if (parent) {
-            const titleEl = parent.querySelector('h2, h3, [class*="title"]') || linkEl;
-            const priceEl = parent.querySelector('[class*="price"], span:contains("R$")');
-            const locationEl = parent.querySelector('[class*="location"], [class*="city"]');
-            const dateEl = parent.querySelector('[class*="date"], time');
+          const text = linkEl.textContent?.trim();
+          if (text && text.length > 5 && text.length < 150) {
+            // Tentar extrair informações do card pai
+            const card = linkEl.closest('[class*="adcard"], li, article, div[class*="card"]');
+            let price = 'Preço não informado';
+            let location = 'Localização não informada';
             
-            const title = titleEl?.textContent?.trim();
-            const price = priceEl?.textContent?.trim();
-            const location = locationEl?.textContent?.trim();
-            const dateText = dateEl?.textContent?.trim();
-            
-            if (title && title.length > 5) {
-              results.push({
-                title,
-                price: price || 'Preço não informado',
-                link,
-                date_text: dateText,
-                location: location || 'Localização não informada',
-                image: null
-              });
-              seen.add(link);
+            if (card) {
+              const priceEl = card.querySelector('h3, [class*="price"]');
+              const locationEl = card.querySelector('[class*="location"]');
+              
+              if (priceEl) price = priceEl.textContent?.trim();
+              if (locationEl) location = locationEl.textContent?.trim();
             }
+            
+            results.push({
+              title: text,
+              price,
+              link,
+              date_text: null,
+              location,
+              image: null
+            });
+            seen.add(link);
           }
         } catch (error) {
-          console.log('Erro no fallback:', error);
+          // Ignorar erros do fallback
         }
       });
     }
@@ -257,9 +201,9 @@ async function waitForListings(page, timeout = 15000) {
   console.log('⏳ Aguardando carregamento dos anúncios...');
   
   try {
-    // Aguardar por elementos específicos do OLX
+    // Aguardar por elementos específicos do OLX (nova estrutura)
     await page.waitForFunction(() => {
-      const hasListings = document.querySelector('[data-lurker_list_id], [data-lurker_dimension_listing_id], .sc-12rk7z2-0, [data-testid*="listing"]');
+      const hasListings = document.querySelector('.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]');
       return !!hasListings;
     }, { timeout, polling: 1000 });
     
