@@ -1,34 +1,31 @@
 const express = require('express');
 const puppeteerExtra = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const puppeteer = require('puppeteer'); 
+const puppeteer = require('puppeteer'); // usado apenas para obter executablePath
 const dayjs = require('dayjs');
 const customParse = require('dayjs/plugin/customParseFormat');
 
 dayjs.extend(customParse);
-
-// Habilita stealth
 puppeteerExtra.use(StealthPlugin());
 
 const app = express();
 app.use(express.json());
 
-// Configurações
+// Configs
 const DEFAULT_LIMIT = 20;
 const VIEWPORT = { width: 1280, height: 800 };
 
-// Lista de user agents realistas (rotação evita bloqueios)
+// User agents rotativos (evita bloqueio pelo OLX)
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15'
 ];
 
-function getRandomUA() {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
+const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
-// Conversão de datas PT-BR
+
+// ----------------- PARSE DE DATAS PT-BR -----------------
 function parsePortugueseRelativeDate(text) {
   if (!text) return null;
   const t = text.trim().toLowerCase();
@@ -44,28 +41,31 @@ function parsePortugueseRelativeDate(text) {
 
   const mDate = t.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
   if (mDate) {
-    const parsed = dayjs(mDate[1], ['DD/MM/YYYY','D/M/YYYY','DD/MM/YY','D/M/YY'], true);
+    const parsed = dayjs(mDate[1], ['DD/MM/YYYY', 'D/M/YYYY', 'DD/MM/YY', 'D/M/YY'], true);
     return parsed.isValid() ? parsed.startOf('day') : null;
   }
 
   return null;
 }
 
-// ---------- FUNÇÃO PRINCIPAL DE SCRAPING ---------- //
+
+// ----------------- EXTRACT SCRAPING -----------------
 async function extractListingsFromPage(page) {
   return await page.evaluate(() => {
     const results = [];
     const seen = new Set();
-    
-    const cards = document.querySelectorAll('.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]');
-    
-    cards.forEach((card) => {
+
+    const cards = document.querySelectorAll(
+      '.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]'
+    );
+
+    cards.forEach(card => {
       try {
+        // Título + link
         let link = null;
         let title = null;
-
-        // Acha título
         const titleEl = card.querySelector('.olx-adcard__title, h2');
+
         if (titleEl) {
           const a = titleEl.closest('a');
           if (a) {
@@ -88,26 +88,30 @@ async function extractListingsFromPage(page) {
         // Data
         let dateText = null;
         const dateEl = card.querySelector('[class*="date"], time');
-        if (dateEl) {
-          dateText = dateEl.textContent.trim();
-        }
+        if (dateEl) dateText = dateEl.textContent.trim();
 
         // Imagem
         const imgEl = card.querySelector('img[src]');
         const image = imgEl && !imgEl.src.includes('data:image') ? imgEl.src : null;
 
         results.push({ title, price, link, location, date_text: dateText, image });
-      } catch (err) {}
+      } catch {}
     });
 
     return results;
   });
 }
 
-async function runScraper(url, maxItems, dateFromObj) {
+
+// ----------------- FUNÇÃO PRINCIPAL DO SCRAPER -----------------
+async function runScraper(url, maxItems, dateFrom) {
+  const execPath = puppeteer.executablePath();
+
+  console.log(`🚀 Usando Chromium em: ${execPath}`);
+
   const browser = await puppeteerExtra.launch({
     headless: true,
-    executablePath: puppeteer.executablePath(),
+    executablePath: execPath, // ← AQUI A MÁGICA (AUTO PATH)
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -117,7 +121,6 @@ async function runScraper(url, maxItems, dateFromObj) {
 
   try {
     const page = await browser.newPage();
-
     await page.setViewport(VIEWPORT);
     await page.setUserAgent(getRandomUA());
 
@@ -125,22 +128,21 @@ async function runScraper(url, maxItems, dateFromObj) {
 
     // Scroll leve
     for (let i = 0; i < 4; i++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.2));
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.3));
       await page.waitForTimeout(1200);
     }
 
-    const items = await extractListingsFromPage(page);
+    const rawItems = await extractListingsFromPage(page);
 
-    // Normalização
-    const normalized = items.map((it, index) => {
+    const normalized = rawItems.map((it, i) => {
       const parsedDate = it.date_text ? parsePortugueseRelativeDate(it.date_text) : null;
 
       let priceNum = null;
-      const match = it.price.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
+      const match = it.price?.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
       if (match) priceNum = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
 
       return {
-        id: index + 1,
+        id: i + 1,
         title: it.title,
         price_text: it.price,
         price: priceNum || null,
@@ -153,22 +155,22 @@ async function runScraper(url, maxItems, dateFromObj) {
       };
     });
 
-    // Filtragem por data
+    // Filtrar por data
     let filtered = normalized;
-    if (dateFromObj) {
-      filtered = filtered.filter(x => {
+    if (dateFrom) {
+      filtered = normalized.filter(x => {
         if (!x.date_parsed) return true;
-        return dayjs(x.date_parsed).isSameOrAfter(dateFromObj, 'day');
+        return dayjs(x.date_parsed).isSameOrAfter(dateFrom, 'day');
       });
     }
 
-    // Remover duplicados por link
-    const seen = new Set();
+    // Remover duplicados
+    const set = new Set();
     const final = [];
 
     for (const item of filtered) {
-      if (!seen.has(item.link)) {
-        seen.add(item.link);
+      if (!set.has(item.link)) {
+        set.add(item.link);
         final.push(item);
       }
     }
@@ -180,6 +182,8 @@ async function runScraper(url, maxItems, dateFromObj) {
   }
 }
 
+
+// ----------------- ENDPOINT: /scrape -----------------
 app.get('/scrape', async (req, res) => {
   const { url, date_from, limit } = req.query;
 
@@ -187,7 +191,7 @@ app.get('/scrape', async (req, res) => {
     return res.status(400).json({ error: 'Parâmetro url é obrigatório' });
   }
 
-  const maxItems = Math.max(1, Math.min(300, parseInt(limit || DEFAULT_LIMIT, 10)));
+  const maxItems = Math.min(300, Math.max(1, parseInt(limit || DEFAULT_LIMIT)));
 
   let dateFromObj = null;
   if (date_from) {
@@ -197,27 +201,21 @@ app.get('/scrape', async (req, res) => {
 
   try {
     const items = await runScraper(url, maxItems, dateFromObj);
-
-    res.json({
-      success: true,
-      fetched: items.length,
-      items
-    });
+    res.json({ success: true, count: items.length, items });
 
   } catch (err) {
-    console.error('Erro no scraping:', err);
+    console.error('❌ Erro no scraping:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ---------- SCRAPER OLX CUSTOM ---------- //
+
+// ----------------- ENDPOINT: /scrape-olx -----------------
 app.get('/scrape-olx', async (req, res) => {
   const { q, state = 'mg', category, limit = 20 } = req.query;
 
   if (!q) {
-    return res.status(400).json({
-      error: 'Parâmetro "q" é obrigatório'
-    });
+    return res.status(400).json({ error: 'Parâmetro "q" é obrigatório' });
   }
 
   let url = `https://www.olx.com.br`;
@@ -230,28 +228,32 @@ app.get('/scrape-olx', async (req, res) => {
   req.query.url = url;
   req.query.limit = limit;
 
-  return await app._router.handle(req, res);
+  return app._router.handle(req, res);
 });
 
-// ---------- HEALTH CHECK SUPER LEVE ---------- //
+
+// ----------------- HEALTHCHECK -----------------
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    service: 'OLX Scraper API',
+    uptime: process.uptime(),
     timestamp: dayjs().toISOString()
   });
 });
 
-// ---------- ROOT ---------- //
+
+// ----------------- ROOT -----------------
 app.get('/', (req, res) => {
   res.json({
-    service: 'OLX Scraper API - otimizado',
-    endpoints: ['/scrape', '/scrape-olx', '/health']
+    service: 'OLX Scraper API',
+    version: 'final-auto-executablePath',
+    docs: ['/scrape', '/scrape-olx', '/health']
   });
 });
 
-// ---------- START ---------- //
+
+// ----------------- START SERVER -----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando em ${PORT}`);
+  console.log(`🚀 OLX Scraper API rodando na porta ${PORT}`);
 });
