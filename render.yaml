@@ -9,18 +9,14 @@ services:
     repo: https://github.com/gnez360/olx-scrapper.git
     branch: main
     
-    # Docker image configuration (otimizado)
+    # Docker image configuration
     dockerfile: ./Dockerfile
     dockerContext: ./
     
     # Server port
     port: 3000
     
-    # Build configuration (otimizado para velocidade)
-    buildCommand: echo "Build via Dockerfile"
-    startCommand: npm start
-    
-    # Health check
+    # Health check configuration
     healthCheckPath: /health
     healthCheckInterval: 30
     healthCheckTimeoutSeconds: 10
@@ -36,25 +32,5 @@ services:
       - key: PUPPETEER_EXECUTABLE_PATH
         value: /usr/bin/chromium-browser
     
-    # Limits
-    maxInstanceCount: 1
-    minInstanceCount: 1
-    
-    # Health check endpoint
-    healthCheckPath: /health
-    healthCheckInterval: 30
-    healthCheckTimeout: 10
-    healthCheckStartupDelay: 30
-    
-    # Auto-deploy from Git commits
+    # Auto-deploy from Git
     autoDeploy: true
-    
-    # Number of instances
-    numInstances: 1
-    
-    # Build and startup timeouts (seconds)
-    buildTimeout: 900
-    startupTimeout: 600
-    
-    # Logging level
-    logLevel: info

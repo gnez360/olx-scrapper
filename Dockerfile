@@ -1,7 +1,8 @@
 FROM node:20-slim
 
-# Instala dependências necessárias para executar o Chromium (otimizado para velocidade)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Instala dependências necessárias para executar o Chromium (otimizado)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
     ca-certificates \
     libnss3 \
     libdbus-1-3 \
@@ -12,16 +13,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 \
     libglib2.0-0 \
     libcups2 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    chromium-browser \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /tmp/* && \
+    rm -rf /var/tmp/*
 
 WORKDIR /usr/src/app
 
 # Copiar package files
 COPY package*.json ./
 
-# Instalar dependências (otimizado)
-RUN npm install --omit=dev --prefer-offline --no-audit && npm cache clean --force
+# Instalar dependências com npm ci (mais confiável)
+RUN npm ci --only=production && \
+    npm cache clean --force && \
+    rm -rf ~/.npm
 
 # Copiar código
 COPY . .
