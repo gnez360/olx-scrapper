@@ -138,20 +138,20 @@ async function runScraper(url, maxItems, dateFrom) {
 
     // Tentar navegação com timeout aumentado e fallback para waitForNavigation
     try {
-      await page.goto(url, { waitUntil: 'networkidle0', timeout: 90000 });
-    } catch (e) {
-      if (e.name === 'TimeoutError') {
-        console.log('⏱️ Timeout na navegação, continuando mesmo assim...');
-        await page.waitForTimeout(5000);
-      } else {
-        throw e;
-      }
+      await page.goto(url, { waitUntil: 'networkidle0', timeout: 5000 });
+      } catch (e) {
+    if (e.name === 'TimeoutError') {
+      console.log('⏱️ Timeout na navegação, continuando mesmo assim...');
+      await new Promise(r => setTimeout(r, 5000));
+    } else {
+      throw e;
     }
+  }
 
     // Scroll leve
     for (let i = 0; i < 4; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.3));
-      await page.waitForTimeout(1200);
+      await new Promise(r => setTimeout(r, 1200));
     }
 
     const rawItems = await extractListingsFromPage(page);
