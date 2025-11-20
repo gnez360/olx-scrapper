@@ -105,13 +105,18 @@ async function extractListingsFromPage(page) {
 
 // ----------------- FUNÇÃO PRINCIPAL DO SCRAPER -----------------
 async function runScraper(url, maxItems, dateFrom) {
-  const execPath = puppeteer.executablePath();
+  let execPath = puppeteer.executablePath();
+
+  // Em containers, use o path do Chromium instalado via apt
+  if (process.env.NODE_ENV === 'production') {
+    execPath = '/usr/bin/chromium';
+  }
 
   console.log(`🚀 Usando Chromium em: ${execPath}`);
 
   const browser = await puppeteerExtra.launch({
     headless: true,
-    executablePath: execPath, // ← AQUI A MÁGICA (AUTO PATH)
+    executablePath: execPath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',

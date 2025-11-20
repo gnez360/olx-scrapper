@@ -3,6 +3,7 @@ FROM node:20-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ca-certificates \
+    chromium \
     libnss3 \
     libxss1 \
     libdbus-1-3 \
