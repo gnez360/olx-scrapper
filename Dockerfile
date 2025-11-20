@@ -13,7 +13,8 @@ RUN apt-get update && \
     libxrandr2 \
     libglib2.0-0 \
     libcups2 \
-    chromium-browser \
+    libxfixes3 \
+    libxext6 \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /tmp/* && \
@@ -32,10 +33,10 @@ RUN npm ci --only=production && \
 # Copiar código
 COPY . .
 
-# Variáveis de ambiente
+# Variáveis de ambiente - Puppeteer baixará e usará seu próprio Chromium
 ENV NODE_ENV=production
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
+ENV PUPPETEER_CACHE_DIR=/usr/src/app/.cache/puppeteer
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
