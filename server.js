@@ -1,20 +1,34 @@
-// server.js - VERSÃO CORRIGIDA
 const express = require('express');
-const puppeteer = require('puppeteer-extra');
+const puppeteerExtra = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const puppeteer = require('puppeteer'); 
 const dayjs = require('dayjs');
 const customParse = require('dayjs/plugin/customParseFormat');
 
-// Configurações de stealth para evitar bloqueios
-puppeteer.use(StealthPlugin());
 dayjs.extend(customParse);
+
+// Habilita stealth
+puppeteerExtra.use(StealthPlugin());
 
 const app = express();
 app.use(express.json());
 
+// Configurações
 const DEFAULT_LIMIT = 20;
 const VIEWPORT = { width: 1280, height: 800 };
 
+// Lista de user agents realistas (rotação evita bloqueios)
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15'
+];
+
+function getRandomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// Conversão de datas PT-BR
 function parsePortugueseRelativeDate(text) {
   if (!text) return null;
   const t = text.trim().toLowerCase();
@@ -31,294 +45,105 @@ function parsePortugueseRelativeDate(text) {
   const mDate = t.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
   if (mDate) {
     const parsed = dayjs(mDate[1], ['DD/MM/YYYY','D/M/YYYY','DD/MM/YY','D/M/YY'], true);
-    if (parsed.isValid()) return parsed.startOf('day');
+    return parsed.isValid() ? parsed.startOf('day') : null;
   }
 
   return null;
 }
 
+// ---------- FUNÇÃO PRINCIPAL DE SCRAPING ---------- //
 async function extractListingsFromPage(page) {
-  console.log('🔍 Iniciando extração de anúncios...');
-  
-  const items = await page.evaluate(() => {
+  return await page.evaluate(() => {
     const results = [];
     const seen = new Set();
-
-    console.log('🎯 Procurando anúncios com classe olx-adcard...');
-
-    // ESTRATÉGIA 1: Buscar por .olx-adcard (estrutura atual do OLX)
-    const listingCards = document.querySelectorAll('.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]');
     
-    console.log(`📦 Encontrados ${listingCards.length} cards potenciais`);
-
-    listingCards.forEach((card, index) => {
+    const cards = document.querySelectorAll('.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]');
+    
+    cards.forEach((card) => {
       try {
-        // Encontrar link do anúncio (o título tem o link)
         let link = null;
         let title = null;
-        
-        // Procurar por <a> dentro do card com href contendo a URL do anúncio
-        const linkEl = card.querySelector('.olx-adcard__title, h2') || card.querySelector('a[href*="olx.com.br"]');
-        
-        if (linkEl) {
-          const anchor = linkEl.closest('a') || linkEl.parentElement.querySelector('a');
-          if (anchor && anchor.href) {
-            link = anchor.href;
-            title = linkEl.textContent?.trim();
-          }
-        }
 
-        // Se não encontrou, tentar outro método
-        if (!link) {
-          const allAnchors = card.querySelectorAll('a[href*="olx.com.br"]');
-          for (let a of allAnchors) {
-            if (a.href && a.textContent?.trim().length > 5) {
-              link = a.href;
-              title = a.textContent?.trim();
-              break;
-            }
+        // Acha título
+        const titleEl = card.querySelector('.olx-adcard__title, h2');
+        if (titleEl) {
+          const a = titleEl.closest('a');
+          if (a) {
+            link = a.href;
+            title = titleEl.textContent.trim();
           }
         }
 
         if (!link || !title || seen.has(link)) return;
         seen.add(link);
 
-        console.log(`📝 Processando card ${index + 1}: ${title.substring(0, 40)}`);
-
-        // Extrair preço - procurar por h3 com classe price
-        let price = null;
+        // Preço
         const priceEl = card.querySelector('.olx-adcard__price');
-        if (priceEl) {
-          price = priceEl.textContent?.trim();
-          console.log(`💰 Preço encontrado: ${price}`);
-        }
+        const price = priceEl ? priceEl.textContent.trim() : 'Preço não informado';
 
-        // Extrair localização - procurar por .olx-adcard__location
-        let location = null;
-        const locationEl = card.querySelector('.olx-adcard__location');
-        if (locationEl) {
-          location = locationEl.textContent?.trim();
-          if (location) {
-            console.log(`📍 Localização: ${location}`);
-          }
-        }
+        // Localização
+        const locEl = card.querySelector('.olx-adcard__location');
+        const location = locEl ? locEl.textContent.trim() : 'Localização não informada';
 
-        // Extrair data - procurar por .olx-adcard__date ou elementos com data
+        // Data
         let dateText = null;
         const dateEl = card.querySelector('[class*="date"], time');
-        console.log(dateEl);
         if (dateEl) {
-          dateText = dateText = dateEl.textContent?.replace(/\s+/g, ' ').replace(/\n+/g, ' ').trim() || dateEl.getAttribute('datetime');
-          if (dateText) {
-            console.log(`📅 Data: ${dateText}`);
-          }
+          dateText = dateEl.textContent.trim();
         }
 
-        // Extrair imagem - procurar por img dentro do card
-        let image = null;
+        // Imagem
         const imgEl = card.querySelector('img[src]');
-        if (imgEl) {
-          image = imgEl.src;
-          if (image && !image.includes('data:image')) {
-            console.log(`🖼️ Imagem encontrada`);
-          } else {
-            image = null;
-          }
-        }
+        const image = imgEl && !imgEl.src.includes('data:image') ? imgEl.src : null;
 
-        // Validar e adicionar resultado
-        if (title && link) {
-          const item = {
-            title,
-            price: price || 'Preço não informado',
-            link,
-            date_text: dateText,
-            location: location || 'Localização não informada',
-            image
-          };
-          
-          results.push(item);
-          console.log(`✅ Anúncio adicionado: ${title.substring(0, 30)}...`);
-        } else {
-          console.log(`❌ Anúncio ignorado - título ou link faltando`);
-        }
-
-      } catch (error) {
-        console.log(`❌ Erro no card ${index + 1}:`, error.message);
-      }
+        results.push({ title, price, link, location, date_text: dateText, image });
+      } catch (err) {}
     });
 
-    // ESTRATÉGIA 2: Fallback - buscar por padrão genérico se nada encontrou
-    if (results.length === 0) {
-      console.log('🔄 Tentando estratégia fallback com padrão genérico...');
-      
-      const allLinks = Array.from(document.querySelectorAll('a[href*="mg.olx.com.br"], a[href*="olx.com.br"]'));
-      allLinks.forEach(linkEl => {
-        try {
-          const link = linkEl.href;
-          if (seen.has(link) || !link.includes('/celulares/')) return;
-          
-          const text = linkEl.textContent?.trim();
-          if (text && text.length > 5 && text.length < 150) {
-            // Tentar extrair informações do card pai
-            const card = linkEl.closest('[class*="adcard"], li, article, div[class*="card"]');
-            let price = 'Preço não informado';
-            let location = 'Localização não informada';
-            
-            if (card) {
-              const priceEl = card.querySelector('h3, [class*="price"]');
-              const locationEl = card.querySelector('[class*="location"]');
-              
-              if (priceEl) price = priceEl.textContent?.trim();
-              if (locationEl) location = locationEl.textContent?.trim();
-            }
-            
-            results.push({
-              title: text,
-              price,
-              link,
-              date_text: null,
-              location,
-              image: null
-            });
-            seen.add(link);
-          }
-        } catch (error) {
-          // Ignorar erros do fallback
-        }
-      });
-    }
-
-    console.log(`🎉 Extração concluída: ${results.length} anúncios encontrados`);
     return results;
+  });
+}
 
+async function runScraper(url, maxItems, dateFromObj) {
+  const browser = await puppeteerExtra.launch({
+    headless: true,
+    executablePath: puppeteer.executablePath(),
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage'
+    ]
   });
 
-  return items;
-}
-
-async function waitForListings(page, timeout = 15000) {
-  console.log('⏳ Aguardando carregamento dos anúncios...');
-  
   try {
-    // Aguardar por elementos específicos do OLX (nova estrutura)
-    await page.waitForFunction(() => {
-      const hasListings = document.querySelector('.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]');
-      return !!hasListings;
-    }, { timeout, polling: 1000 });
-    
-    console.log('✅ Anúncios detectados na página');
-    return true;
-  } catch (error) {
-    console.log('⚠️ Timeout aguardando anúncios, continuando mesmo assim...');
-    return false;
-  }
-}
-
-app.get('/scrape', async (req, res) => {
-  const { url, date_from, limit } = req.query;
-  
-  if (!url) {
-    return res.status(400).json({ 
-      error: 'Parâmetro url é obrigatório',
-      example: '?url=https://www.olx.com.br/celulares/estado-mg/iphone?q=iphone'
-    });
-  }
-
-  console.log(`🚀 Iniciando scraping para: ${url}`);
-  const maxItems = Math.max(1, Math.min(500, parseInt(limit || DEFAULT_LIMIT, 10)));
-
-  let dateFromObj = null;
-  if (date_from) {
-    dateFromObj = dayjs(date_from, ['YYYY-MM-DD', 'DD/MM/YYYY'], true);
-    if (!dateFromObj.isValid()) dateFromObj = null;
-  }
-
-  let browser = null;
-  try {
-    // Configuração do Puppeteer com stealth
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=site-per-process',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding'
-      ],
-      ignoreHTTPSErrors: true
-    });
-
     const page = await browser.newPage();
-    
-    // Configurar viewport e user agent realista
+
     await page.setViewport(VIEWPORT);
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    
-    // Configurar headers realistas
-    await page.setExtraHTTPHeaders({
-      'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-      'accept-language': 'pt-BR,pt;q=0.9,en;q=0.8',
-      'cache-control': 'no-cache',
-      'pragma': 'no-cache',
-    });
+    await page.setUserAgent(getRandomUA());
 
-    // Navegar para a URL
-    console.log(`🌐 Navegando para: ${url}`);
-    await page.goto(url, { 
-      waitUntil: 'networkidle2', 
-      timeout: 60000 
-    });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Aguardar carregamento dos anúncios
-    await waitForListings(page);
-
-    // Scroll para carregar conteúdo lazy
-    console.log('📜 Fazendo scroll para carregar mais conteúdo...');
-    for (let i = 0; i < 6; i++) {
-      await page.evaluate(() => {
-        window.scrollBy(0, window.innerHeight * 1.5);
-      });
-      await page.waitForTimeout(1500);
+    // Scroll leve
+    for (let i = 0; i < 4; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.2));
+      await page.waitForTimeout(1200);
     }
 
-    // Voltar ao topo
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(1000);
+    const items = await extractListingsFromPage(page);
 
-    // Extrair anúncios
-    console.log('🔍 Extraindo dados dos anúncios...');
-    let items = await extractListingsFromPage(page);
-    console.log(`📊 Total de anúncios extraídos: ${items.length}`);
-
-    // Processar e normalizar dados
+    // Normalização
     const normalized = items.map((it, index) => {
-      console.log(`🔄 Normalizando anúncio ${index + 1}: ${it.title.substring(0, 30)}...`);
-      
       const parsedDate = it.date_text ? parsePortugueseRelativeDate(it.date_text) : null;
-      
-      // Processar preço
+
       let priceNum = null;
-      if (it.price && it.price !== 'Preço não informado') {
-        const priceMatch = it.price.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
-        if (priceMatch) {
-          priceNum = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
-        }
-      }
+      const match = it.price.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
+      if (match) priceNum = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
 
       return {
         id: index + 1,
         title: it.title,
         price_text: it.price,
-        price: isNaN(priceNum) ? null : priceNum,
+        price: priceNum || null,
         link: it.link,
         location: it.location,
         image: it.image,
@@ -328,173 +153,105 @@ app.get('/scrape', async (req, res) => {
       };
     });
 
-    // Filtrar por data se especificado
+    // Filtragem por data
     let filtered = normalized;
-    if (dateFromObj && dateFromObj.isValid()) {
-      filtered = filtered.filter(it => {
-        if (!it.date_parsed) return true; // Manter itens sem data quando filtro está ativo
-        return dayjs(it.date_parsed).isSameOrAfter(dateFromObj, 'day');
+    if (dateFromObj) {
+      filtered = filtered.filter(x => {
+        if (!x.date_parsed) return true;
+        return dayjs(x.date_parsed).isSameOrAfter(dateFromObj, 'day');
       });
     }
 
-    // Remover duplicados
-    const finalResults = [];
-    const seenLinks = new Set();
-    
+    // Remover duplicados por link
+    const seen = new Set();
+    const final = [];
+
     for (const item of filtered) {
-      if (!seenLinks.has(item.link)) {
-        finalResults.push(item);
-        seenLinks.add(item.link);
+      if (!seen.has(item.link)) {
+        seen.add(item.link);
+        final.push(item);
       }
     }
 
-    // Limitar resultados
-    const limited = finalResults.slice(0, maxItems);
+    return final.slice(0, maxItems);
 
-    console.log(`✅ Scraping concluído: ${limited.length} anúncios retornados`);
+  } finally {
+    await browser.close();
+  }
+}
 
-    // Retornar resposta
-    return res.json({
+app.get('/scrape', async (req, res) => {
+  const { url, date_from, limit } = req.query;
+
+  if (!url) {
+    return res.status(400).json({ error: 'Parâmetro url é obrigatório' });
+  }
+
+  const maxItems = Math.max(1, Math.min(300, parseInt(limit || DEFAULT_LIMIT, 10)));
+
+  let dateFromObj = null;
+  if (date_from) {
+    dateFromObj = dayjs(date_from, ['YYYY-MM-DD', 'DD/MM/YYYY'], true);
+    if (!dateFromObj.isValid()) dateFromObj = null;
+  }
+
+  try {
+    const items = await runScraper(url, maxItems, dateFromObj);
+
+    res.json({
       success: true,
-      meta: {
-        source: url,
-        scraped_at: dayjs().toISOString(),
-        requested_limit: maxItems,
-        returned: limited.length,
-        total_candidates: items.length,
-        filtered_by_date: dateFromObj ? dateFromObj.format('YYYY-MM-DD') : null
-      },
-      items: limited
+      fetched: items.length,
+      items
     });
 
   } catch (err) {
-    console.error('❌ Erro no scraping:', err);
-    return res.status(500).json({ 
-      success: false,
-      error: 'Falha no scraping',
-      detail: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
-  } finally {
-    if (browser) {
-      await browser.close();
-      console.log('🔚 Navegador fechado');
-    }
+    console.error('Erro no scraping:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Nova rota para scraping específico do OLX
+// ---------- SCRAPER OLX CUSTOM ---------- //
 app.get('/scrape-olx', async (req, res) => {
   const { q, state = 'mg', category, limit = 20 } = req.query;
-  
+
   if (!q) {
     return res.status(400).json({
-      error: 'Parâmetro "q" (query) é obrigatório',
-      example: '/scrape-olx?q=iphone&state=sp&category=celulares'
+      error: 'Parâmetro "q" é obrigatório'
     });
   }
 
-  // Construir URL do OLX
-  const baseUrl = 'https://www.olx.com.br';
-  let olxUrl = `${baseUrl}`;
-  
-  if (category) {
-    olxUrl += `/${category}`;
-  }
-  
-  olxUrl += `?q=${encodeURIComponent(q)}`;
-  
-  if (state && state !== 'all') {
-    olxUrl += `&sf=1`; // Ordenar por mais recentes
-  }
+  let url = `https://www.olx.com.br`;
 
-  console.log(`🔗 URL construída: ${olxUrl}`);
-  
-  // Redirecionar para a rota principal de scraping
-  const scrapeUrl = `/scrape?url=${encodeURIComponent(olxUrl)}&limit=${limit}`;
-  
-  // Usar método interno ou redirecionar
-  req.query.url = olxUrl;
+  if (state !== 'all') url += `/estado-${state}`;
+  if (category) url += `/${category}`;
+
+  url += `?q=${encodeURIComponent(q)}&sf=1`;
+
+  req.query.url = url;
   req.query.limit = limit;
-  
-  return await req.app._router.handle(req, res);
+
+  return await app._router.handle(req, res);
 });
 
-// Health check melhorado
-app.get('/health', async (req, res) => {
-  try {
-    // Teste rápido do OLX
-    const testUrl = 'https://www.olx.com.br/celulares?q=iphone&sf=1';
-    
-    let browser = null;
-    try {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-      });
-      
-      const page = await browser.newPage();
-      await page.goto(testUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      
-      const title = await page.title();
-      
-      res.json({
-        status: 'healthy',
-        timestamp: dayjs().toISOString(),
-        olx_accessible: true,
-        page_title: title,
-        service: 'OLX Scraper API'
-      });
-      
-    } finally {
-      if (browser) await browser.close();
-    }
-    
-  } catch (error) {
-    res.status(500).json({
-      status: 'unhealthy',
-      timestamp: dayjs().toISOString(),
-      error: error.message,
-      olx_accessible: false
-    });
-  }
-});
-
-// Rota de exemplo e documentação
-app.get('/', (req, res) => {
+// ---------- HEALTH CHECK SUPER LEVE ---------- //
+app.get('/health', (req, res) => {
   res.json({
+    status: 'ok',
     service: 'OLX Scraper API',
-    version: '2.0.0',
-    endpoints: {
-      '/scrape': {
-        method: 'GET',
-        parameters: {
-          url: 'URL completa do OLX (obrigatória)',
-          limit: 'Número máximo de resultados (opcional, padrão: 20)',
-          date_from: 'Filtrar a partir da data (YYYY-MM-DD ou DD/MM/YYYY)'
-        },
-        example: '/scrape?url=https://www.olx.com.br/celulares/iphone&limit=10'
-      },
-      '/scrape-olx': {
-        method: 'GET',
-        parameters: {
-          q: 'Termo de busca (obrigatório)',
-          state: 'Estado (opcional, padrão: mg)',
-          category: 'Categoria (opcional)',
-          limit: 'Número máximo de resultados'
-        },
-        example: '/scrape-olx?q=iphone+16&state=sp&category=celulares&limit=15'
-      },
-      '/health': 'Health check do serviço'
-    }
+    timestamp: dayjs().toISOString()
   });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 OLX Scraper API rodando na porta ${PORT}`);
-  console.log(`📚 Documentação: http://localhost:${PORT}`);
-  console.log(`🔍 Exemplo: http://localhost:${PORT}/scrape-olx?q=iphone&limit=5`);
+// ---------- ROOT ---------- //
+app.get('/', (req, res) => {
+  res.json({
+    service: 'OLX Scraper API - otimizado',
+    endpoints: ['/scrape', '/scrape-olx', '/health']
+  });
 });
 
-module.exports = app;
+// ---------- START ---------- //
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor rodando em ${PORT}`);
+});

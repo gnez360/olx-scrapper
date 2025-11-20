@@ -4,16 +4,33 @@ services:
     env: docker
     plan: free
     region: frankfurt
+    autoDeploy: true
+
     repo: https://github.com/gnez360/olx-scrapper.git
     branch: main
-    
-    # Environment variables
+  
+    startCommand: "npm start" 
+    numInstances: 1
+    healthCheckPath: /health
+    healthCheckTimeout: 300
+    healthCheckInterval: 30
+    autoStart: true
+
+    cpu: 0.5
+    memory: 512Mi
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: "3000"
+      - key: PUPPETEER_CACHE_DIR
+        value: "/usr/src/app/.cache/puppeteer"
       - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
-        value: "true"
-      - key: PUPPETEER_EXECUTABLE_PATH
-        value: /usr/bin/chromium-browser
+        value: "false"
+      - key: CHROMIUM_PATH
+        value: "/usr/bin/chromium"
+    concurrency:
+      softLimit: 5
+      hardLimit: 10
+
+    dockerfilePath: Dockerfile
