@@ -129,7 +129,24 @@ async function runScraper(url, maxItems, dateFrom) {
     await page.setViewport(VIEWPORT);
     await page.setUserAgent(getRandomUA());
 
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    // Definir headers mais realistas
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+      'Referer': 'https://www.olx.com.br/'
+    });
+
+    // Tentar navegação com timeout aumentado e fallback para waitForNavigation
+    try {
+      await page.goto(url, { waitUntil: 'networkidle0', timeout: 90000 });
+    } catch (e) {
+      if (e.name === 'TimeoutError') {
+        console.log('⏱️ Timeout na navegação, continuando mesmo assim...');
+        await page.waitForTimeout(5000);
+      } else {
+        throw e;
+      }
+    }
 
     // Scroll leve
     for (let i = 0; i < 4; i++) {

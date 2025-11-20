@@ -12,8 +12,8 @@ services:
     startCommand: "npm start" 
     numInstances: 1
     healthCheckPath: /health
-    healthCheckTimeout: 300
-    healthCheckInterval: 30
+    healthCheckTimeout: 600
+    healthCheckInterval: 60
     autoStart: true
 
     cpu: 0.5
