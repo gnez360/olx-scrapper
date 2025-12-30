@@ -4,7 +4,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const puppeteer = require('puppeteer');
 const dayjs = require('dayjs');
 const customParse = require('dayjs/plugin/customParseFormat');
-const isSameOrAfter = require('dayjs/plugin/isSameOrAfter'); // Importante para o filtro de data
+const isSameOrAfter = require('dayjs/plugin/isSameOrAfter');
 
 dayjs.extend(customParse);
 dayjs.extend(isSameOrAfter);
@@ -53,7 +53,7 @@ async function extractListingsFromPage(page) {
   return await page.evaluate(() => {
     const results = [];
     const seen = new Set();
-     const cards = document.querySelectorAll(
+    const cards = document.querySelectorAll(
       '.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]'
     );
     cards.forEach(card => {
@@ -63,7 +63,7 @@ async function extractListingsFromPage(page) {
         const titleEl = card.querySelector('.olx-adcard__title, h2');
 
         if (titleEl) {
-          const a = titleEl.closest('a');
+          const a = titleEl.tagName === 'A' ? titleEl : titleEl.closest('a');
           if (a) {
             link = a.href;
             title = titleEl.textContent.trim();
@@ -82,15 +82,37 @@ async function extractListingsFromPage(page) {
         let dateText = null;
         const dateEl = card.querySelector('[class*="date"], time');
         if (dateEl) dateText = dateEl.textContent.trim();
+        
+        let image = null;
+        const imgEl = card.querySelector('img');
 
-        results.push({ title, price, link, location, date_text: dateText });
+        if (imgEl) {          
+          const srcset = imgEl.getAttribute('srcset');   // Formato: "url1 1x, url2 2x"
+          const dataSrc = imgEl.getAttribute('data-src'); // Lazy load
+          const src = imgEl.getAttribute('src');
+
+          if (srcset) {
+            image = srcset.split(',')[0].trim().split(' ')[0];
+          } else if (dataSrc) {
+            image = dataSrc;
+          } else {
+            image = src;
+          }
+
+          // Se a imagem capturada for o placeholder (base64), anulamos ou tentamos fallback
+          if (image && image.includes('data:image')) {
+            image = imgEl.getAttribute('data-splide-lazy') || null;
+          }
+        }
+
+        results.push({ title, price, link, location, date_text: dateText, image });
       } catch {}
     });
     return results;
   });
 }
 
-// ----------------- RUN SCRAPER (COM LOGS COMPLETOS) -----------------
+// ----------------- RUN SCRAPER -----------------
 async function runScraper(url, maxItems, dateFrom) {
   let execPath = puppeteer.executablePath();
   if (process.env.NODE_ENV === 'production') execPath = '/usr/bin/chromium';
@@ -128,7 +150,6 @@ async function runScraper(url, maxItems, dateFrom) {
       'Referer': 'https://www.olx.com.br/'
     });
 
-
     console.log(`[2] Navegando para: ${url}`);
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -136,7 +157,7 @@ async function runScraper(url, maxItems, dateFrom) {
       console.log(`[AVISO] Goto timeout ou erro: ${e.message}`);
     }
 
-    console.log(`[3] Aguardando seletor...`);
+    console.log(`[3] Aguardando cards...`);
     try {
       await page.waitForSelector('.olx-adcard, [data-lurker_list_id]', { timeout: 10000 });
     } catch (e) {
@@ -144,16 +165,12 @@ async function runScraper(url, maxItems, dateFrom) {
     }
 
     console.log(`[4] Extraindo dados brutos...`);
-    
     for (let i = 0; i < 3; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
       await new Promise(r => setTimeout(r, 800));
     }
-
     const rawItems = await extractListingsFromPage(page);
-    console.log(`[5] Itens extraídos: ${rawItems.length}. Iniciando processamento...`);
-
-    
+    console.log(`[5] Itens brutos: ${rawItems.length}`);
     const normalized = [];
     console.log(`[6] Iniciando loop de normalização...`);
     
@@ -172,11 +189,11 @@ async function runScraper(url, maxItems, dateFrom) {
           id: i + 1,
           title: it.title,
           price_text: it.price,
-          price: priceNum || null,
+          price: priceNum,
           link: it.link,
           location: it.location,
-          image: it.image,
-        date_text: it.date_text,
+          image: it.image, 
+          date_text: it.date_text,
           date_parsed: parsedDate ? parsedDate.format('YYYY-MM-DD') : null,
           scraped_at: dayjs().format('YYYY-MM-DD HH:mm:ss')
         });
@@ -204,7 +221,6 @@ async function runScraper(url, maxItems, dateFrom) {
         final.push(item);
       }
     }
-
     console.log(`[8] Processamento finalizado. Total: ${final.length}. Retornando...`);
     return final.slice(0, maxItems);
 
@@ -212,19 +228,17 @@ async function runScraper(url, maxItems, dateFrom) {
     console.error(`[FATAL] Erro dentro do runScraper:`, fatalError);
     throw fatalError;
   } finally {
-    console.log(`[9] Fechando navegador...`);
     if (browser) {
-      // FIX CRÍTICO: Race condition para fechar o browser
-      // Se o browser.close() travar, nós forçamos a continuação após 3 segundos
+      // Força fechamento com timeout para não travar a request
       const closePromise = browser.close();
       const timeoutPromise = new Promise(resolve => setTimeout(resolve, 3000));
-      
       await Promise.race([closePromise, timeoutPromise])
         .then(() => console.log(`[10] Navegador fechado (ou timeout forçado).`))
         .catch(e => console.log(`[AVISO] Erro ao fechar browser: ${e.message}`));
-    }
+    }    
   }
 }
+
 
 // ----------------- ENDPOINT -----------------
 app.get('/scrape', async (req, res) => {
@@ -252,7 +266,7 @@ app.get('/scrape', async (req, res) => {
 });
 
 // ----------------- ROOT -----------------
-app.get('/', (req, res) => res.json({ status: 'API Online com Logs Verbose' }));
+app.get('/', (req, res) => res.json({ status: 'API Online' }));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 const PORT = process.env.PORT || 3000;
