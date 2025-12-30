@@ -1,65 +1,63 @@
 const express = require('express');
 const puppeteerExtra = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const puppeteer = require('puppeteer'); // usado apenas para obter executablePath
+const puppeteer = require('puppeteer');
 const dayjs = require('dayjs');
 const customParse = require('dayjs/plugin/customParseFormat');
+const isSameOrAfter = require('dayjs/plugin/isSameOrAfter'); // Importante para o filtro de data
 
 dayjs.extend(customParse);
+dayjs.extend(isSameOrAfter);
 puppeteerExtra.use(StealthPlugin());
 
 const app = express();
 app.use(express.json());
 
-// Configs
 const DEFAULT_LIMIT = 20;
 const VIEWPORT = { width: 1280, height: 800 };
 
-// User agents rotativos
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15'
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118 Safari/537.36'
 ];
 
 const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
-// ----------------- PARSE DE DATAS PT-BR -----------------
+// ----------------- PARSE DE DATAS -----------------
 function parsePortugueseRelativeDate(text) {
   if (!text) return null;
   const t = text.trim().toLowerCase();
+  try {
+    if (t.includes('hoje')) return dayjs().startOf('day');
+    if (t.includes('ontem')) return dayjs().subtract(1, 'day').startOf('day');
 
-  if (t.includes('hoje')) return dayjs().startOf('day');
-  if (t.includes('ontem')) return dayjs().subtract(1, 'day').startOf('day');
+    const mDays = t.match(/(\d+)\s*dias?/);
+    if (mDays) return dayjs().subtract(parseInt(mDays[1], 10), 'day').startOf('day');
 
-  const mDays = t.match(/(\d+)\s*dias?/);
-  if (mDays) return dayjs().subtract(parseInt(mDays[1], 10), 'day').startOf('day');
+    const mHours = t.match(/(\d+)\s*hora/);
+    if (mHours) return dayjs().subtract(parseInt(mHours[1], 10), 'hour');
 
-  const mHours = t.match(/(\d+)\s*hora/);
-  if (mHours) return dayjs().subtract(parseInt(mHours[1], 10), 'hour');
-
-  const mDate = t.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
-  if (mDate) {
-    const parsed = dayjs(mDate[1], ['DD/MM/YYYY', 'D/M/YYYY', 'DD/MM/YY', 'D/M/YY'], true);
-    return parsed.isValid() ? parsed.startOf('day') : null;
+    const mDate = t.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+    if (mDate) {
+      const parsed = dayjs(mDate[1], ['DD/MM/YYYY', 'D/M/YYYY', 'DD/MM/YY', 'D/M/YY'], true);
+      return parsed.isValid() ? parsed.startOf('day') : null;
+    }
+  } catch (e) {
+    console.log(`Erro ao parsear data: ${text}`);
   }
-
   return null;
 }
 
-// ----------------- EXTRACT SCRAPING -----------------
+// ----------------- EXTRAÇÃO NO BROWSER -----------------
 async function extractListingsFromPage(page) {
   return await page.evaluate(() => {
     const results = [];
     const seen = new Set();
-
-    const cards = document.querySelectorAll(
+     const cards = document.querySelectorAll(
       '.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]'
     );
-
     cards.forEach(card => {
       try {
-        // Título + link
         let link = null;
         let title = null;
         const titleEl = card.querySelector('.olx-adcard__title, h2');
@@ -75,137 +73,121 @@ async function extractListingsFromPage(page) {
         if (!link || !title || seen.has(link)) return;
         seen.add(link);
 
-        // Preço
         const priceEl = card.querySelector('.olx-adcard__price');
-        const price = priceEl ? priceEl.textContent.trim() : 'Preço não informado';
+        const price = priceEl ? priceEl.textContent.trim() : null;
 
-        // Localização
         const locEl = card.querySelector('.olx-adcard__location');
-        const location = locEl ? locEl.textContent.trim() : 'Localização não informada';
+        const location = locEl ? locEl.textContent.trim() : null;
 
-        // Data
         let dateText = null;
         const dateEl = card.querySelector('[class*="date"], time');
         if (dateEl) dateText = dateEl.textContent.trim();
 
-        // Imagem
-        const imgEl = card.querySelector('img[src]');
-        const image = imgEl && !imgEl.src.includes('data:image') ? imgEl.src : null;
-
-        results.push({ title, price, link, location, date_text: dateText, image });
+        results.push({ title, price, link, location, date_text: dateText });
       } catch {}
     });
-
     return results;
   });
 }
 
-// ----------------- FUNÇÃO PRINCIPAL DO SCRAPER (OTIMIZADA) -----------------
+// ----------------- RUN SCRAPER (COM LOGS COMPLETOS) -----------------
 async function runScraper(url, maxItems, dateFrom) {
   let execPath = puppeteer.executablePath();
+  if (process.env.NODE_ENV === 'production') execPath = '/usr/bin/chromium';
 
-  // Em containers, use o path do Chromium instalado via apt
-  if (process.env.NODE_ENV === 'production') {
-    execPath = '/usr/bin/chromium';
-  }
+  console.log(`[1] Iniciando Chromium em: ${execPath}`);
 
-  console.log(`🚀 (Otimizado) Usando Chromium em: ${execPath}`);
-
-  // FIX: Nome da variável corrigido e args limpos
   const browser = await puppeteerExtra.launch({
     headless: 'new',
     executablePath: execPath,
-    timeout: 0, 
+    timeout: 0,
     protocolTimeout: 240000,
     args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      // Flags para economizar memória e evitar crash no Render
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process', 
-      '--disable-extensions'
+      '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--disable-accelerated-2d-canvas', '--no-first-run',
+      '--no-zygote', '--single-process', '--disable-extensions'
     ]
   });
 
   try {
     const page = await browser.newPage();
     
-    // --- OTIMIZAÇÃO CRÍTICA: BLOQUEAR RECURSOS PESADOS ---
-    // Isso faz a página de imóveis carregar muito rápido sem baixar fotos/mapas
+    // Bloqueio de recursos
     await page.setRequestInterception(true);
     page.on('request', (req) => {
-      const resourceType = req.resourceType();
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
+      if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) req.abort();
+      else req.continue();
     });
-    
-    // Remove timeouts padrão
+
     page.setDefaultNavigationTimeout(0);
     page.setDefaultTimeout(0);
-
     await page.setViewport(VIEWPORT);
     await page.setUserAgent(getRandomUA());
-
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
       'Referer': 'https://www.olx.com.br/'
     });
 
-    console.log(`Navegando para: ${url}`);
 
-    // FIX: Usar 'domcontentloaded' em vez de 'networkidle0'
-    // Isso evita que o scraper fique preso esperando scripts de tracking
+    console.log(`[2] Navegando para: ${url}`);
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } catch (e) {
-      console.log(`⚠️ Aviso na navegação: ${e.message}`);
+      console.log(`[AVISO] Goto timeout ou erro: ${e.message}`);
     }
 
-    // Esperar explicitamente pelo carregamento dos cards (máximo 15s)
+    console.log(`[3] Aguardando seletor...`);
     try {
-      await page.waitForSelector('.olx-adcard, [data-lurker_list_id]', { timeout: 15000 });
+      await page.waitForSelector('.olx-adcard, [data-lurker_list_id]', { timeout: 10000 });
     } catch (e) {
-      console.log('⚠️ Seletor de cards não apareceu rápido, tentando extrair mesmo assim...');
+      console.log(`[AVISO] Seletor não apareceu, tentando extrair direto.`);
     }
 
-    // Scroll mais rápido (já que não tem imagens para carregar)
+    console.log(`[4] Extraindo dados brutos...`);
+    
     for (let i = 0; i < 3; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
       await new Promise(r => setTimeout(r, 800));
     }
 
     const rawItems = await extractListingsFromPage(page);
-    console.log(`Extraídos ${rawItems.length} itens.`);
+    console.log(`[5] Itens extraídos: ${rawItems.length}. Iniciando processamento...`);
 
-    const normalized = rawItems.map((it, i) => {
-      const parsedDate = it.date_text ? parsePortugueseRelativeDate(it.date_text) : null;
+    
+    const normalized = [];
+    console.log(`[6] Iniciando loop de normalização...`);
+    
+    for (let i = 0; i < rawItems.length; i++) {
+      const it = rawItems[i];
+      try {
+        const parsedDate = it.date_text ? parsePortugueseRelativeDate(it.date_text) : null;
+        
+        let priceNum = null;
+        if (it.price) {
+            const match = it.price.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
+            if (match) priceNum = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
+        }
 
-      let priceNum = null; // FIX: Nome da variável corrigido
-      const match = it.price?.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
-      if (match) priceNum = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
-
-      return {
-        id: i + 1,
-        title: it.title,
-        price_text: it.price,
-        price: priceNum || null,
-        link: it.link,
-        location: it.location,
-        image: it.image,
+        normalized.push({
+          id: i + 1,
+          title: it.title,
+          price_text: it.price,
+          price: priceNum || null,
+          link: it.link,
+          location: it.location,
+          image: it.image,
         date_text: it.date_text,
-        date_parsed: parsedDate ? parsedDate.format('YYYY-MM-DD') : null,
-        scraped_at: dayjs().format('YYYY-MM-DD HH:mm:ss')
-      };
-    });
+          date_parsed: parsedDate ? parsedDate.format('YYYY-MM-DD') : null,
+          scraped_at: dayjs().format('YYYY-MM-DD HH:mm:ss')
+        });
+      } catch (err) {
+        console.error(`[ERRO] Falha ao processar item ${i}:`, err.message);
+      }
+    }
 
-    // Filtrar por data
+    console.log(`[7] Normalização concluída. Filtrando por data...`);
+
+    // Filtrar e Deduplicar
     let filtered = normalized;
     if (dateFrom) {
       filtered = normalized.filter(x => {
@@ -214,10 +196,8 @@ async function runScraper(url, maxItems, dateFrom) {
       });
     }
 
-    // Remover duplicados
     const set = new Set();
     const final = [];
-
     for (const item of filtered) {
       if (!set.has(item.link)) {
         set.add(item.link);
@@ -225,87 +205,57 @@ async function runScraper(url, maxItems, dateFrom) {
       }
     }
 
+    console.log(`[8] Processamento finalizado. Total: ${final.length}. Retornando...`);
     return final.slice(0, maxItems);
 
+  } catch (fatalError) {
+    console.error(`[FATAL] Erro dentro do runScraper:`, fatalError);
+    throw fatalError;
   } finally {
-    if (browser) await browser.close();
+    console.log(`[9] Fechando navegador...`);
+    if (browser) {
+      // FIX CRÍTICO: Race condition para fechar o browser
+      // Se o browser.close() travar, nós forçamos a continuação após 3 segundos
+      const closePromise = browser.close();
+      const timeoutPromise = new Promise(resolve => setTimeout(resolve, 3000));
+      
+      await Promise.race([closePromise, timeoutPromise])
+        .then(() => console.log(`[10] Navegador fechado (ou timeout forçado).`))
+        .catch(e => console.log(`[AVISO] Erro ao fechar browser: ${e.message}`));
+    }
   }
 }
 
-// ----------------- ENDPOINT: /scrape -----------------
+// ----------------- ENDPOINT -----------------
 app.get('/scrape', async (req, res) => {
-  // Timeout HTTP de 10 minutos
-  req.setTimeout(600000);
-
+  req.setTimeout(600000); // 10 min
+  console.log(`\n--- NOVA REQUISIÇÃO /scrape ---`);
+  
   const { url, date_from, limit } = req.query;
 
-  if (!url) {
-    return res.status(400).json({ error: 'Parâmetro url é obrigatório' });
-  }
+  if (!url) return res.status(400).json({ error: 'URL obrigatória' });
 
-  const maxItems = Math.min(300, Math.max(1, parseInt(limit || DEFAULT_LIMIT)));
-
+  const maxItems = parseInt(limit || DEFAULT_LIMIT);
   let dateFromObj = null;
   if (date_from) {
     dateFromObj = dayjs(date_from, ['YYYY-MM-DD', 'DD/MM/YYYY'], true);
-    if (!dateFromObj.isValid()) dateFromObj = null;
   }
 
   try {
     const items = await runScraper(url, maxItems, dateFromObj);
+    console.log(`[SUCESSO] Enviando resposta JSON com ${items.length} itens.`);
     res.json({ success: true, count: items.length, items });
-
   } catch (err) {
-    console.error('❌ Erro no scraping:', err);
-    if (!res.headersSent) {
-        res.status(500).json({ error: err.message });
-    }
+    console.error('[ERRO API]', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
-});
-
-// ----------------- ENDPOINT: /scrape-olx -----------------
-app.get('/scrape-olx', async (req, res) => {
-  req.setTimeout(600000);
-
-  const { q, state = 'mg', category, limit = 20 } = req.query;
-
-  if (!q) {
-    return res.status(400).json({ error: 'Parâmetro "q" é obrigatório' });
-  }
-
-  let url = `https://www.olx.com.br`;
-
-  if (state !== 'all') url += `/estado-${state}`;
-  if (category) url += `/${category}`;
-
-  url += `?q=${encodeURIComponent(q)}&sf=1`;
-
-  req.query.url = url;
-  req.query.limit = limit;
-
-  return app._router.handle(req, res);
-});
-
-// ----------------- HEALTHCHECK -----------------
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    uptime: process.uptime(),
-    timestamp: dayjs().toISOString()
-  });
 });
 
 // ----------------- ROOT -----------------
-app.get('/', (req, res) => {
-  res.json({
-    service: 'OLX Scraper API',
-    version: 'final-optimized-fixed',
-    docs: ['/scrape', '/scrape-olx', '/health']
-  });
-});
+app.get('/', (req, res) => res.json({ status: 'API Online com Logs Verbose' }));
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-// ----------------- START SERVER -----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 OLX Scraper API rodando na porta ${PORT}`);
+  console.log(`🚀 API rodando na porta ${PORT}`);
 });
