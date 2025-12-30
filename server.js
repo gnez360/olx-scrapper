@@ -15,7 +15,7 @@ app.use(express.json());
 const DEFAULT_LIMIT = 20;
 const VIEWPORT = { width: 1280, height: 800 };
 
-// User agents rotativos (evita bloqueio pelo OLX)
+// User agents rotativos
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118 Safari/537.36',
@@ -23,7 +23,6 @@ const USER_AGENTS = [
 ];
 
 const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-
 
 // ----------------- PARSE DE DATAS PT-BR -----------------
 function parsePortugueseRelativeDate(text) {
@@ -47,7 +46,6 @@ function parsePortugueseRelativeDate(text) {
 
   return null;
 }
-
 
 // ----------------- EXTRACT SCRAPING -----------------
 async function extractListingsFromPage(page) {
@@ -102,18 +100,19 @@ async function extractListingsFromPage(page) {
   });
 }
 
-
-// ----------------- FUNÇÃO PRINCIPAL DO SCRAPER -----------------
+// ----------------- FUNÇÃO PRINCIPAL DO SCRAPER (OTIMIZADA) -----------------
 async function runScraper(url, maxItems, dateFrom) {
   let execPath = puppeteer.executablePath();
 
+  // Em containers, use o path do Chromium instalado via apt
   if (process.env.NODE_ENV === 'production') {
     execPath = '/usr/bin/chromium';
   }
 
-  console.log(`🚀 Usando Chromium em: ${execPath}`);
+  console.log(`🚀 (Otimizado) Usando Chromium em: ${execPath}`);
 
-  constQVbrowser = await puppeteerExtra.launch({
+  // FIX: Nome da variável corrigido e args limpos
+  const browser = await puppeteerExtra.launch({
     headless: 'new',
     executablePath: execPath,
     timeout: 0, 
@@ -123,17 +122,20 @@ async function runScraper(url, maxItems, dateFrom) {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--disableUA-accelerated-2d-canvas',
+      // Flags para economizar memória e evitar crash no Render
+      '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
       '--single-process', 
-      '--disableQb-extensions'
+      '--disable-extensions'
     ]
   });
 
   try {
     const page = await browser.newPage();
     
+    // --- OTIMIZAÇÃO CRÍTICA: BLOQUEAR RECURSOS PESADOS ---
+    // Isso faz a página de imóveis carregar muito rápido sem baixar fotos/mapas
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const resourceType = req.resourceType();
@@ -143,8 +145,9 @@ async function runScraper(url, maxItems, dateFrom) {
         req.continue();
       }
     });
-
-    page.setDefaultNavigationTimeout(0); 
+    
+    // Remove timeouts padrão
+    page.setDefaultNavigationTimeout(0);
     page.setDefaultTimeout(0);
 
     await page.setViewport(VIEWPORT);
@@ -155,33 +158,36 @@ async function runScraper(url, maxItems, dateFrom) {
       'Referer': 'https://www.olx.com.br/'
     });
 
-    console.log(`Navigating to: ${url}`);
+    console.log(`Navegando para: ${url}`);
 
+    // FIX: Usar 'domcontentloaded' em vez de 'networkidle0'
+    // Isso evita que o scraper fique preso esperando scripts de tracking
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } catch (e) {
-      console.log(`⚠️ Aviso no goto: ${e.message}`);
+      console.log(`⚠️ Aviso na navegação: ${e.message}`);
     }
 
+    // Esperar explicitamente pelo carregamento dos cards (máximo 15s)
     try {
       await page.waitForSelector('.olx-adcard, [data-lurker_list_id]', { timeout: 15000 });
     } catch (e) {
-      console.log('⚠️ Seletor de cards não encontrado rapidamente, tentando extrair mesmo assim...');
+      console.log('⚠️ Seletor de cards não apareceu rápido, tentando extrair mesmo assim...');
     }
 
-    // Scroll mais rápido e agressivo (já que não tem imagens)
+    // Scroll mais rápido (já que não tem imagens para carregar)
     for (let i = 0; i < 3; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
-      await new Promise(r => setTimeout(r, 800)); // Espera menor
+      await new Promise(r => setTimeout(r, 800));
     }
 
     const rawItems = await extractListingsFromPage(page);
-    console.log(`Extraídos ${rawItems.length} itens brutos.`);
+    console.log(`Extraídos ${rawItems.length} itens.`);
 
     const normalized = rawItems.map((it, i) => {
       const parsedDate = it.date_text ? parsePortugueseRelativeDate(it.date_text) : null;
 
-      letQDpriceNum = null;
+      let priceNum = null; // FIX: Nome da variável corrigido
       const match = it.price?.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
       if (match) priceNum = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
 
@@ -199,7 +205,7 @@ async function runScraper(url, maxItems, dateFrom) {
       };
     });
 
-    // Filtragem e Deduplicação (código original mantido)
+    // Filtrar por data
     let filtered = normalized;
     if (dateFrom) {
       filtered = normalized.filter(x => {
@@ -208,6 +214,7 @@ async function runScraper(url, maxItems, dateFrom) {
       });
     }
 
+    // Remover duplicados
     const set = new Set();
     const final = [];
 
@@ -227,7 +234,9 @@ async function runScraper(url, maxItems, dateFrom) {
 
 // ----------------- ENDPOINT: /scrape -----------------
 app.get('/scrape', async (req, res) => {
+  // Timeout HTTP de 10 minutos
   req.setTimeout(600000);
+
   const { url, date_from, limit } = req.query;
 
   if (!url) {
@@ -254,7 +263,6 @@ app.get('/scrape', async (req, res) => {
   }
 });
 
-
 // ----------------- ENDPOINT: /scrape-olx -----------------
 app.get('/scrape-olx', async (req, res) => {
   req.setTimeout(600000);
@@ -278,7 +286,6 @@ app.get('/scrape-olx', async (req, res) => {
   return app._router.handle(req, res);
 });
 
-
 // ----------------- HEALTHCHECK -----------------
 app.get('/health', (req, res) => {
   res.json({
@@ -288,16 +295,14 @@ app.get('/health', (req, res) => {
   });
 });
 
-
 // ----------------- ROOT -----------------
 app.get('/', (req, res) => {
   res.json({
     service: 'OLX Scraper API',
-    version: 'final-long-process-fix',
+    version: 'final-optimized-fixed',
     docs: ['/scrape', '/scrape-olx', '/health']
   });
 });
-
 
 // ----------------- START SERVER -----------------
 const PORT = process.env.PORT || 3000;
