@@ -158,18 +158,23 @@ async function runScraper(url, maxItems, dateFrom) {
 
   console.log(`[1] Iniciando Chromium em: ${execPath}`);
 
+  const launchArgs = [
+    '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+    '--disable-gpu', '--disable-accelerated-2d-canvas', '--no-first-run',
+    '--no-zygote', '--single-process', '--disable-extensions',
+    '--disable-background-networking', '--disable-sync', '--disable-translate',
+    '--disable-default-apps', '--mute-audio', '--no-err-sandbox',
+    '--no-pings', '--no-err-sandbox', '--window-size=1920,1080'
+  ];
+  const proxyUrl = process.env.PROXY_URL;
+  if (proxyUrl) launchArgs.push(`--proxy-server=${proxyUrl}`);
+
   const browser = await puppeteerExtra.launch({
     headless: true,
     executablePath: execPath,
     timeout: 0,
     protocolTimeout: 240000,
-    args: [
-      '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-      '--disable-gpu', '--disable-accelerated-2d-canvas', '--no-first-run',
-      '--no-zygote', '--single-process', '--disable-extensions',
-      '--disable-background-networking', '--disable-sync', '--disable-translate',
-      '--disable-default-apps', '--mute-audio', '--no-err-sandbox'
-    ]
+    args: launchArgs
   });
   activeBrowser = browser;
 
@@ -206,67 +211,32 @@ async function runScraper(url, maxItems, dateFrom) {
       'Referer': 'https://www.olx.com.br/'
     });
 
-    // Função para detectar Cloudflare
     const isCloudflare = async () => {
       return page.evaluate(() => {
         const t = document.title.toLowerCase();
         const b = (document.body?.textContent || '').toLowerCase();
-        return t.includes('cloudflare') || b.includes('checking your browser') || b.includes('cf-challenge');
+        return t.includes('cloudflare') || b.includes('checking your browser') || b.includes('cf-challenge') || b.includes('you have been blocked');
       });
     };
 
-    // Tenta navegar até 2x se detectar Cloudflare
-    let cfResolved = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) {
-        console.log(`[RETRY] Tentativa ${attempt+1} com fingerprint diferente...`);
-        const ua2 = getRandomUA();
-        const vp2 = getRandomViewport();
-        await page.setViewport(vp2);
-        await page.setUserAgent(ua2);
-      }
-    
-      console.log(`[2] Navegando para: ${url}`);
-      try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      } catch (e) {
-        console.log(`[AVISO] Goto timeout ou erro: ${e.message}`);
-      }
-
-      await new Promise(r => setTimeout(r, 3000));
-
-      if (await isCloudflare()) {
-        console.log(`[CF] Cloudflare detectado na tentativa ${attempt+1}. Aguardando resolução...`);
-        // Tenta esperar o JS challenge resolver
-        try {
-          await page.waitForFunction(() => {
-            const t = document.title.toLowerCase();
-            const b = (document.body?.textContent || '').toLowerCase();
-            return !t.includes('cloudflare') && !b.includes('checking your browser');
-          }, { timeout: 30000 });
-          console.log('[CF] Cloudflare resolvido!');
-          cfResolved = true;
-          break;
-        } catch {
-          console.log(`[CF] Cloudflare não resolveu, tentando novamente...`);
-          continue;
-        }
-      } else {
-        console.log('[CF] Sem Cloudflare.');
-        cfResolved = true;
-        break;
-      }
+    console.log(`[2] Navegando para: ${url}`);
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    } catch (e) {
+      console.log(`[AVISO] Goto timeout ou erro: ${e.message}`);
     }
 
-    if (!cfResolved) {
-      console.log(`[FATAL] Cloudflare não foi resolvido após 3 tentativas.`);
+    await new Promise(r => setTimeout(r, 3000));
+
+    if (await isCloudflare()) {
       const debug = await page.evaluate(() => ({
         title: document.title,
-        bodyStart: document.body?.innerHTML?.substring(0, 800) || '',
-        url: location.href
+        bodyStart: document.body?.innerHTML?.substring(0, 500) || ''
       }));
-      console.log(`[DEBUG] ${JSON.stringify(debug)}`);
-      throw new Error('Cloudflare bloqueou o acesso após 3 tentativas');
+      console.log(`[FATAL] Cloudflare bloqueou o acesso. ${JSON.stringify(debug)}`);
+      console.log(`[SOLUCAO] Configure uma variavel de ambiente PROXY_URL com um proxy residencial.`);
+      console.log(`[SOLUCAO] Ex: PROXY_URL=http://user:pass@proxy-servico.com:port`);
+      throw new Error('Cloudflare bloqueou o acesso. Configure PROXY_URL com um proxy residencial.');
     }
 
     console.log(`[3] Aguardando cards...`);

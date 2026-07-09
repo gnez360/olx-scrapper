@@ -3,15 +3,26 @@
 ## Descrição
 Serviço HTTP robusto que abre URLs do OLX, renderiza com Puppeteer e retorna JSON estruturado com anúncios. Inclui detecção inteligente de elementos, parsing de datas em português e normalização de preços.
 
+## ⚠️ Cloudflare (Render.com)
+
+O OLX usa Cloudflare, que bloqueia IPs de datacenter (como o Render). Para usar no Render, configure um **proxy residencial** via variável de ambiente `PROXY_URL`:
+
+```bash
+# No Render Dashboard > Environment Variables
+PROXY_URL=http://user:pass@provedor.com:port
+```
+
+Serviços recomendados: BrightData, ScraperAPI, ScrapingBee, ou qualquer proxy HTTP residencial.
+
 ## 🚀 Melhorias Recentes
 
+✅ **Proxy support** — variável `PROXY_URL` para bypass de Cloudflare  
+✅ **Detecção de Cloudflare** — log claro quando bloqueado com instruções de solução  
+✅ **Anti-detecção** — fingerprints aleatórios, plugins falsos, remoção de `navigator.webdriver`  
 ✅ **Detecção aprimorada** de cards de anúncio com múltiplas estratégias de seletor  
-✅ **Novos campos**: localização, imagem, total de candidatos encontrados  
-✅ **Melhor lazy loading** com scroll mais agressivo  
+✅ **Parsing de datas PT-BR** — suporte a "Hoje", "Ontem", "X de mes"  
 ✅ **Normalização de dados** (preços, datas, URLs)  
-✅ **Resiliência a mudanças** do markup do OLX  
 ✅ **Health check** endpoint para monitoramento  
-✅ **Script de teste** incluído  
 
 ## Endpoint
 

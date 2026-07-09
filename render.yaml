@@ -29,6 +29,9 @@ services:
         value: "false"
       - key: CHROMIUM_PATH
         value: "/usr/bin/chromium"
+      # Para bypassar Cloudflare, configure um proxy residencial:
+      # - key: PROXY_URL
+      #   value: "http://user:pass@provedor.com:port"
     concurrency:
       softLimit: 5
       hardLimit: 10
