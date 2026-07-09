@@ -25,14 +25,24 @@ process.on('SIGTERM', async () => {
 });
 
 const DEFAULT_LIMIT = 20;
-const VIEWPORT = { width: 1280, height: 800 };
 
 const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118 Safari/537.36'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36'
 ];
 
-const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+const VIEWPORTS = [
+  { width: 1280, height: 800 },
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1920, height: 1080 }
+];
+
+const pickRandom = arr => arr[Math.floor(Math.random() * arr.length)];
+const getRandomUA = () => pickRandom(USER_AGENTS);
+const getRandomViewport = () => pickRandom(VIEWPORTS);
 
 // ----------------- PARSE DE DATAS -----------------
 function parsePortugueseRelativeDate(text) {
@@ -165,7 +175,16 @@ async function runScraper(url, maxItems, dateFrom) {
 
   try {
     const page = await browser.newPage();
-    
+
+    // Anti-detecção adicional (antes de qualquer navegação)
+    await page.evaluateOnNewDocument(() => {
+      delete navigator.__proto__.webdriver;
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {} };
+      Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+    });
+
     // Bloqueio de recursos
     await page.setRequestInterception(true);
     page.on('request', (req) => {
@@ -175,22 +194,80 @@ async function runScraper(url, maxItems, dateFrom) {
 
     page.setDefaultNavigationTimeout(0);
     page.setDefaultTimeout(0);
-    await page.setViewport(VIEWPORT);
-    await page.setUserAgent(getRandomUA());
+
+    // Configuração fingerprint aleatório
+    const ua = getRandomUA();
+    const vp = getRandomViewport();
+    await page.setViewport(vp);
+    await page.setUserAgent(ua);
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Referer': 'https://www.olx.com.br/'
     });
 
-    console.log(`[2] Navegando para: ${url}`);
-    try {
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    } catch (e) {
-      console.log(`[AVISO] Goto timeout ou erro: ${e.message}`);
+    // Função para detectar Cloudflare
+    const isCloudflare = async () => {
+      return page.evaluate(() => {
+        const t = document.title.toLowerCase();
+        const b = (document.body?.textContent || '').toLowerCase();
+        return t.includes('cloudflare') || b.includes('checking your browser') || b.includes('cf-challenge');
+      });
+    };
+
+    // Tenta navegar até 2x se detectar Cloudflare
+    let cfResolved = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        console.log(`[RETRY] Tentativa ${attempt+1} com fingerprint diferente...`);
+        const ua2 = getRandomUA();
+        const vp2 = getRandomViewport();
+        await page.setViewport(vp2);
+        await page.setUserAgent(ua2);
+      }
+    
+      console.log(`[2] Navegando para: ${url}`);
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      } catch (e) {
+        console.log(`[AVISO] Goto timeout ou erro: ${e.message}`);
+      }
+
+      await new Promise(r => setTimeout(r, 3000));
+
+      if (await isCloudflare()) {
+        console.log(`[CF] Cloudflare detectado na tentativa ${attempt+1}. Aguardando resolução...`);
+        // Tenta esperar o JS challenge resolver
+        try {
+          await page.waitForFunction(() => {
+            const t = document.title.toLowerCase();
+            const b = (document.body?.textContent || '').toLowerCase();
+            return !t.includes('cloudflare') && !b.includes('checking your browser');
+          }, { timeout: 30000 });
+          console.log('[CF] Cloudflare resolvido!');
+          cfResolved = true;
+          break;
+        } catch {
+          console.log(`[CF] Cloudflare não resolveu, tentando novamente...`);
+          continue;
+        }
+      } else {
+        console.log('[CF] Sem Cloudflare.');
+        cfResolved = true;
+        break;
+      }
     }
 
-    // Pequena pausa para renderização JS
-    await new Promise(r => setTimeout(r, 2000));
+    if (!cfResolved) {
+      console.log(`[FATAL] Cloudflare não foi resolvido após 3 tentativas.`);
+      const debug = await page.evaluate(() => ({
+        title: document.title,
+        bodyStart: document.body?.innerHTML?.substring(0, 800) || '',
+        url: location.href
+      }));
+      console.log(`[DEBUG] ${JSON.stringify(debug)}`);
+      throw new Error('Cloudflare bloqueou o acesso após 3 tentativas');
+    }
 
     console.log(`[3] Aguardando cards...`);
     try {
@@ -210,7 +287,7 @@ async function runScraper(url, maxItems, dateFrom) {
     if (rawItems.length === 0) {
       const debug = await page.evaluate(() => ({
         title: document.title,
-        bodyStart: document.body?.innerHTML?.substring(0, 500) || '',
+        bodyStart: document.body?.innerHTML?.substring(0, 800) || '',
         url: location.href
       }));
       console.log(`[DEBUG] Nenhum item encontrado. Title: "${debug.title}", URL: ${debug.url}`);
