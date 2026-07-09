@@ -42,6 +42,19 @@ function parsePortugueseRelativeDate(text) {
       const parsed = dayjs(mDate[1], ['DD/MM/YYYY', 'D/M/YYYY', 'DD/MM/YY', 'D/M/YY'], true);
       return parsed.isValid() ? parsed.startOf('day') : null;
     }
+
+    const MONTHS = { 'jan':0,'fev':1,'mar':2,'abr':3,'mai':4,'jun':5,'jul':6,'ago':7,'set':8,'out':9,'nov':10,'dez':11 };
+    const mPt = t.match(/(\d{1,2})\s*de\s*(\w+)/);
+    if (mPt) {
+      const monthIdx = MONTHS[mPt[2].substring(0,3)];
+      if (monthIdx !== undefined) {
+        const d = parseInt(mPt[1], 10);
+        const now = dayjs();
+        const year = monthIdx > now.month() ? now.year() - 1 : now.year();
+        const parsed = dayjs(new Date(year, monthIdx, d));
+        return parsed.isValid() ? parsed.startOf('day') : null;
+      }
+    }
   } catch (e) {
     console.log(`Erro ao parsear data: ${text}`);
   }
@@ -60,9 +73,13 @@ async function extractListingsFromPage(page) {
       try {
         let link = null;
         let title = null;
+        const linkEl = card.querySelector('a.olx-adcard__link');
         const titleEl = card.querySelector('.olx-adcard__title, h2');
 
-        if (titleEl) {
+        if (linkEl) {
+          link = linkEl.href;
+          title = linkEl.title || (titleEl ? titleEl.textContent.trim() : '');
+        } else if (titleEl) {
           const a = titleEl.tagName === 'A' ? titleEl : titleEl.closest('a');
           if (a) {
             link = a.href;
@@ -80,7 +97,7 @@ async function extractListingsFromPage(page) {
         const location = locEl ? locEl.textContent.trim() : null;
 
         let dateText = null;
-        const dateEl = card.querySelector('[class*="date"], time');
+        const dateEl = card.querySelector('.olx-adcard__date') || card.querySelector('[class*="date"], time');
         if (dateEl) dateText = dateEl.textContent.trim();
         
         let image = null;
@@ -120,7 +137,7 @@ async function runScraper(url, maxItems, dateFrom) {
   console.log(`[1] Iniciando Chromium em: ${execPath}`);
 
   const browser = await puppeteerExtra.launch({
-    headless: 'new',
+    headless: true,
     executablePath: execPath,
     timeout: 0,
     protocolTimeout: 240000,
