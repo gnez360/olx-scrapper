@@ -1,50 +1,17 @@
 const express = require('express');
-const puppeteerExtra = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const puppeteer = require('puppeteer');
+const axios = require('axios');
 const dayjs = require('dayjs');
 const customParse = require('dayjs/plugin/customParseFormat');
 const isSameOrAfter = require('dayjs/plugin/isSameOrAfter');
 
 dayjs.extend(customParse);
 dayjs.extend(isSameOrAfter);
-puppeteerExtra.use(StealthPlugin());
 
 const app = express();
 app.use(express.json());
 
-let activeBrowser = null;
-
-process.on('SIGTERM', async () => {
-  console.log('[SHUTDOWN] SIGTERM recebido, fechando browser...');
-  if (activeBrowser) {
-    try { await activeBrowser.close(); } catch {}
-    activeBrowser = null;
-  }
-  process.exit(0);
-});
-
 const DEFAULT_LIMIT = 20;
 
-const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36'
-];
-
-const VIEWPORTS = [
-  { width: 1280, height: 800 },
-  { width: 1366, height: 768 },
-  { width: 1440, height: 900 },
-  { width: 1920, height: 1080 }
-];
-
-const pickRandom = arr => arr[Math.floor(Math.random() * arr.length)];
-const getRandomUA = () => pickRandom(USER_AGENTS);
-const getRandomViewport = () => pickRandom(VIEWPORTS);
-
-// ----------------- PARSE DE DATAS -----------------
 function parsePortugueseRelativeDate(text) {
   if (!text) return null;
   const t = text.trim().toLowerCase();
@@ -77,267 +44,148 @@ function parsePortugueseRelativeDate(text) {
       }
     }
   } catch (e) {
-    console.log(`Erro ao parsear data: ${text}`);
+    console.log(`[WARN] Erro ao parsear data: ${text}`);
   }
   return null;
 }
 
-// ----------------- EXTRAÇÃO NO BROWSER -----------------
-async function extractListingsFromPage(page) {
-  return await page.evaluate(() => {
-    const results = [];
-    const seen = new Set();
-    const cards = document.querySelectorAll(
-      '.olx-adcard, [data-lurker_list_id], [data-lurker_dimension_listing_id]'
-    );
-    cards.forEach(card => {
-      try {
-        let link = null;
-        let title = null;
-        const linkEl = card.querySelector('a.olx-adcard__link');
-        const titleEl = card.querySelector('.olx-adcard__title, h2');
-
-        if (linkEl) {
-          link = linkEl.href;
-          title = linkEl.title || (titleEl ? titleEl.textContent.trim() : '');
-        } else if (titleEl) {
-          const a = titleEl.tagName === 'A' ? titleEl : titleEl.closest('a');
-          if (a) {
-            link = a.href;
-            title = titleEl.textContent.trim();
-          }
-        }
-
-        if (!link || !title || seen.has(link)) return;
-        seen.add(link);
-
-        const priceEl = card.querySelector('.olx-adcard__price');
-        const price = priceEl ? priceEl.textContent.trim() : null;
-
-        const locEl = card.querySelector('.olx-adcard__location');
-        const location = locEl ? locEl.textContent.trim() : null;
-
-        let dateText = null;
-        const dateEl = card.querySelector('.olx-adcard__date') || card.querySelector('[class*="date"], time');
-        if (dateEl) dateText = dateEl.textContent.trim();
-        
-        let image = null;
-        const imgEl = card.querySelector('img');
-
-        if (imgEl) {          
-          const srcset = imgEl.getAttribute('srcset');   // Formato: "url1 1x, url2 2x"
-          const dataSrc = imgEl.getAttribute('data-src'); // Lazy load
-          const src = imgEl.getAttribute('src');
-
-          if (srcset) {
-            image = srcset.split(',')[0].trim().split(' ')[0];
-          } else if (dataSrc) {
-            image = dataSrc;
-          } else {
-            image = src;
-          }
-
-          // Se a imagem capturada for o placeholder (base64), anulamos ou tentamos fallback
-          if (image && image.includes('data:image')) {
-            image = imgEl.getAttribute('data-splide-lazy') || null;
-          }
-        }
-
-        results.push({ title, price, link, location, date_text: dateText, image });
-      } catch {}
-    });
-    return results;
+async function fetchViaJina(url) {
+  const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
+  console.log(`[FETCH] ${jinaUrl}`);
+  const resp = await axios.get(jinaUrl, {
+    timeout: 120000,
+    headers: {
+      'Accept': 'text/plain, text/markdown, */*',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
   });
+  return resp.data;
 }
 
-// ----------------- RUN SCRAPER -----------------
-async function runScraper(url, maxItems, dateFrom) {
-  let execPath = process.env.NODE_ENV === 'production'
-    ? (process.env.CHROMIUM_PATH || '/usr/bin/chromium')
-    : puppeteer.executablePath();
+function parseListingsFromMarkdown(md) {
+  const results = [];
+  const lines = md.split('\n');
 
-  console.log(`[1] Iniciando Chromium em: ${execPath}`);
+  for (let i = 0; i < lines.length; i++) {
+    const headingMatch = lines[i].match(/^##\s+\[([^\]]+)\]\(([^)]+?)(?:\s+"[^"]*")?\)\s*$/);
+    if (!headingMatch) continue;
 
-  const launchArgs = [
-    '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-    '--disable-gpu', '--disable-accelerated-2d-canvas', '--no-first-run',
-    '--no-zygote', '--single-process', '--disable-extensions',
-    '--disable-background-networking', '--disable-sync', '--disable-translate',
-    '--disable-default-apps', '--mute-audio', '--no-err-sandbox',
-    '--no-pings', '--no-err-sandbox', '--window-size=1920,1080'
-  ];
-  const proxyUrl = process.env.PROXY_URL;
-  if (proxyUrl) launchArgs.push(`--proxy-server=${proxyUrl}`);
+    const title = headingMatch[1].trim();
+    let url = headingMatch[2].trim();
 
-  const browser = await puppeteerExtra.launch({
-    headless: true,
-    executablePath: execPath,
-    timeout: 0,
-    protocolTimeout: 240000,
-    args: launchArgs
-  });
-  activeBrowser = browser;
+    if (!/\d{6,}/.test(url)) continue;
 
-  try {
-    const page = await browser.newPage();
+    i++;
 
-    // Anti-detecção adicional (antes de qualquer navegação)
-    await page.evaluateOnNewDocument(() => {
-      delete navigator.__proto__.webdriver;
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {} };
-      Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
-    });
+    const blockLines = [];
+    while (i < lines.length && !lines[i].startsWith('## ')) {
+      blockLines.push(lines[i]);
+      i++;
+    }
+    i--;
 
-    // Bloqueio de recursos
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      if (['image', 'media'].includes(req.resourceType())) req.abort();
-      else req.continue();
-    });
+    const block = blockLines.join('\n').trim();
 
-    page.setDefaultNavigationTimeout(0);
-    page.setDefaultTimeout(0);
+    if (/publicidade/i.test(block)) continue;
 
-    // Configuração fingerprint aleatório
-    const ua = getRandomUA();
-    const vp = getRandomViewport();
-    await page.setViewport(vp);
-    await page.setUserAgent(ua);
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Referer': 'https://www.olx.com.br/'
-    });
+    const blines = block.split('\n').map(l => l.trim()).filter(Boolean);
 
-    const isCloudflare = async () => {
-      return page.evaluate(() => {
-        const t = document.title.toLowerCase();
-        const b = (document.body?.textContent || '').toLowerCase();
-        return t.includes('cloudflare') || b.includes('checking your browser') || b.includes('cf-challenge') || b.includes('you have been blocked');
+    let price = null;
+    const priceIdx = blines.findIndex(l => /^###\s/.test(l));
+    if (priceIdx >= 0) {
+      const pm = blines[priceIdx].match(/###\s*(R?\$?\s*[\d\s.,]+)/);
+      if (pm) price = pm[1].trim();
+    }
+
+    let dateText = null;
+    const dateIdx = blines.findIndex(l => /\b(Hoje|Ontem|\d{1,2}\s*de\s*\w+|há\s+\d+)/i.test(l));
+    if (dateIdx >= 0) dateText = blines[dateIdx];
+
+    let location = null;
+    if (priceIdx >= 0) {
+      const start = priceIdx + 1;
+      const end = dateIdx >= 0 ? dateIdx : blines.length;
+      const locLines = blines.slice(start, end).filter(l => {
+        if (/^(publicidade|Chat$|!\[|Adicionar|Ir para|Patrocinado|Destaque|\*$|Slide|Histórico|Reduziu|Aceita|Avaliações|Online|Localiza)/i.test(l)) return false;
+        return l.length > 2;
       });
-    };
-
-    console.log(`[2] Navegando para: ${url}`);
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    } catch (e) {
-      console.log(`[AVISO] Goto timeout ou erro: ${e.message}`);
+      if (locLines.length > 0) location = locLines[locLines.length - 1];
     }
 
-    await new Promise(r => setTimeout(r, 3000));
+    let image = null;
+    const imgMatch = block.match(/!\[[^\]]*\]\(([^)]+)\)/);
+    if (imgMatch) image = imgMatch[1];
 
-    if (await isCloudflare()) {
-      const debug = await page.evaluate(() => ({
-        title: document.title,
-        bodyStart: document.body?.innerHTML?.substring(0, 500) || ''
-      }));
-      console.log(`[FATAL] Cloudflare bloqueou o acesso. ${JSON.stringify(debug)}`);
-      console.log(`[SOLUCAO] Configure uma variavel de ambiente PROXY_URL com um proxy residencial.`);
-      console.log(`[SOLUCAO] Ex: PROXY_URL=http://user:pass@proxy-servico.com:port`);
-      throw new Error('Cloudflare bloqueou o acesso. Configure PROXY_URL com um proxy residencial.');
-    }
-
-    console.log(`[3] Aguardando cards...`);
-    try {
-      await page.waitForSelector('.olx-adcard', { timeout: 30000 });
-    } catch (e) {
-      console.log(`[AVISO] Seletor .olx-adcard não apareceu em 30s, tentando extrair direto.`);
-    }
-
-    console.log(`[4] Extraindo dados brutos...`);
-    for (let i = 0; i < 5; i++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
-      await new Promise(r => setTimeout(r, 1000));
-    }
-    await new Promise(r => setTimeout(r, 2000));
-    const rawItems = await extractListingsFromPage(page);
-    console.log(`[5] Itens brutos: ${rawItems.length}`);
-    if (rawItems.length === 0) {
-      const debug = await page.evaluate(() => ({
-        title: document.title,
-        bodyStart: document.body?.innerHTML?.substring(0, 800) || '',
-        url: location.href
-      }));
-      console.log(`[DEBUG] Nenhum item encontrado. Title: "${debug.title}", URL: ${debug.url}`);
-    }
-    const normalized = [];
-    console.log(`[6] Iniciando loop de normalização...`);
-    
-    for (let i = 0; i < rawItems.length; i++) {
-      const it = rawItems[i];
-      try {
-        const parsedDate = it.date_text ? parsePortugueseRelativeDate(it.date_text) : null;
-        
-        let priceNum = null;
-        if (it.price) {
-            const match = it.price.match(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?)/);
-            if (match) priceNum = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
-        }
-
-        normalized.push({
-          id: i + 1,
-          title: it.title,
-          price_text: it.price,
-          price: priceNum,
-          link: it.link,
-          location: it.location,
-          image: it.image, 
-          date_text: it.date_text,
-          date_parsed: parsedDate ? parsedDate.format('YYYY-MM-DD') : null,
-          scraped_at: dayjs().format('YYYY-MM-DD HH:mm:ss')
-        });
-      } catch (err) {
-        console.error(`[ERRO] Falha ao processar item ${i}:`, err.message);
-      }
-    }
-
-    console.log(`[7] Normalização concluída. Filtrando por data...`);
-
-    // Filtrar e Deduplicar
-    let filtered = normalized;
-    if (dateFrom) {
-      filtered = normalized.filter(x => {
-        if (!x.date_parsed) return true;
-        return dayjs(x.date_parsed).isSameOrAfter(dateFrom, 'day');
-      });
-    }
-
-    const set = new Set();
-    const final = [];
-    for (const item of filtered) {
-      if (!set.has(item.link)) {
-        set.add(item.link);
-        final.push(item);
-      }
-    }
-    console.log(`[8] Processamento finalizado. Total: ${final.length}. Retornando...`);
-    return final.slice(0, maxItems);
-
-  } catch (fatalError) {
-    console.error(`[FATAL] Erro dentro do runScraper:`, fatalError);
-    throw fatalError;
-  } finally {
-    if (browser) {
-      activeBrowser = null;
-      const closePromise = browser.close();
-      const timeoutPromise = new Promise(resolve => setTimeout(resolve, 3000));
-      await Promise.race([closePromise, timeoutPromise])
-        .then(() => console.log(`[10] Navegador fechado (ou timeout forçado).`))
-        .catch(e => console.log(`[AVISO] Erro ao fechar browser: ${e.message}`));
-    }    
+    results.push({ title, price, link: url, location, date_text: dateText, image });
   }
+
+  return results;
 }
 
+async function runScraper(url, maxItems, dateFrom) {
+  console.log(`[1] Fetching via r.jina.ai: ${url}`);
+  const markdown = await fetchViaJina(url);
+  const kb = (markdown.length / 1024).toFixed(1);
+  console.log(`[2] Markdown recebido: ${kb}KB`);
 
-// ----------------- ENDPOINT -----------------
+  const rawItems = parseListingsFromMarkdown(markdown);
+  console.log(`[3] Itens brutos: ${rawItems.length}`);
+
+  const normalized = [];
+  for (let i = 0; i < rawItems.length; i++) {
+    const it = rawItems[i];
+    try {
+      const parsedDate = it.date_text ? parsePortugueseRelativeDate(it.date_text) : null;
+
+      let priceNum = null;
+      if (it.price) {
+        const match = it.price.match(/([\d\s.,]+)/);
+        if (match) priceNum = parseFloat(match[1].replace(/\./g, '').replace(',', '.').replace(/\s/g, ''));
+      }
+
+      normalized.push({
+        id: i + 1,
+        title: it.title,
+        price_text: it.price,
+        price: priceNum,
+        link: it.link,
+        location: it.location,
+        image: it.image,
+        date_text: it.date_text,
+        date_parsed: parsedDate ? parsedDate.format('YYYY-MM-DD') : null,
+        scraped_at: dayjs().format('YYYY-MM-DD HH:mm:ss')
+      });
+    } catch (err) {
+      console.error(`[ERRO] Falha ao processar item ${i}:`, err.message);
+    }
+  }
+
+  let filtered = normalized;
+  if (dateFrom) {
+    filtered = normalized.filter(x => {
+      if (!x.date_parsed) return false;
+      return dayjs(x.date_parsed).isSameOrAfter(dateFrom, 'day');
+    });
+  }
+
+  const seen = new Set();
+  const final = [];
+  for (const item of filtered) {
+    if (!seen.has(item.link)) {
+      seen.add(item.link);
+      final.push(item);
+    }
+  }
+
+  console.log(`[4] Final: ${final.length} itens`);
+  return final.slice(0, maxItems);
+}
+
 app.get('/scrape', async (req, res) => {
-  req.setTimeout(600000); // 10 min
-  console.log(`\n--- NOVA REQUISIÇÃO /scrape ---`);
-  
-  const { url, date_from, limit } = req.query;
+  req.setTimeout(180000);
+  console.log(`\n--- /scrape ---`);
 
+  const { url, date_from, limit } = req.query;
   if (!url) return res.status(400).json({ error: 'URL obrigatória' });
 
   const maxItems = parseInt(limit || DEFAULT_LIMIT);
@@ -348,7 +196,6 @@ app.get('/scrape', async (req, res) => {
 
   try {
     const items = await runScraper(url, maxItems, dateFromObj);
-    console.log(`[SUCESSO] Enviando resposta JSON com ${items.length} itens.`);
     res.json({ success: true, count: items.length, items });
   } catch (err) {
     console.error('[ERRO API]', err);
@@ -356,11 +203,10 @@ app.get('/scrape', async (req, res) => {
   }
 });
 
-// ----------------- ROOT -----------------
-app.get('/', (req, res) => res.json({ status: 'API Online' }));
+app.get('/', (req, res) => res.json({ status: 'API Online (r.jina.ai)' }));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 API rodando na porta ${PORT}`);
+  console.log(`API rodando na porta ${PORT} (via r.jina.ai)`);
 });

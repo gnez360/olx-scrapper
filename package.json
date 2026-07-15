@@ -1,7 +1,7 @@
 {
-  "name": "olx-scraper-render",
+  "name": "olx-scraper-jina",
   "version": "1.0.0",
-  "description": "Small Puppeteer scraper for OLX search pages, container-ready for Render.com",
+  "description": "OLX search results via r.jina.ai reader proxy - no browser needed",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,13 +10,9 @@
   "dependencies": {
     "axios": "^1.13.2",
     "dayjs": "^1.11.10",
-    "express": "^4.18.2",
-    "puppeteer": "^24.30.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "express": "^4.18.2"
   },
   "devDependencies": {
-    "jsdom": "^27.2.0",
     "nodemon": "^3.0.2"
   }
 }
